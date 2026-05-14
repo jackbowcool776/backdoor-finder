@@ -604,8 +604,7 @@ local function populateScripts()
             Instance.new("UIPadding",srcBox).PaddingLeft=UDim.new(0,6)
             Instance.new("UIPadding",srcBox).PaddingTop=UDim.new(0,6)
 
-            -- Display source with line numbers
-            local lines = srcBox.Source ~= nil and srcBox.Source or scriptData.source
+            -- Display source code
             local srcLabel=Instance.new("TextLabel")
             srcLabel.Size=UDim2.new(1,-12,0,10)
             srcLabel.AutomaticSize=Enum.AutomaticSize.Y
@@ -614,7 +613,12 @@ local function populateScripts()
             srcLabel.TextXAlignment=Enum.TextXAlignment.Left
             srcLabel.TextWrapped=true
             srcLabel.RichText=false
-            srcLabel.Text=scriptData.source
+            -- Limit to first 5000 chars to avoid overflow
+            local displaySrc = scriptData.source
+            if #displaySrc > 5000 then
+                displaySrc = displaySrc:sub(1,5000).."\n\n[... truncated, copy to see full source ...]"
+            end
+            srcLabel.Text=displaySrc
             srcLabel.ZIndex=13 srcLabel.Parent=srcBox
 
             -- Copy source button
@@ -646,7 +650,28 @@ scanBtn.MouseButton1Click:Connect(function()
         -- Step 1: collect
         statusLbl.Text = "Step 1/3 — Collecting game objects..."
         task.wait()
-        local allObjects = game:GetDescendants()
+        -- Only scan relevant services, not ALL of game (avoids 120k+ objects)
+        local SCAN_ROOTS = {
+            workspace,
+            game:GetService("ReplicatedStorage"),
+            game:GetService("ReplicatedFirst"),
+            game:GetService("ServerScriptService"),
+            game:GetService("StarterGui"),
+            game:GetService("StarterPack"),
+            game:GetService("StarterPlayer"),
+            game:GetService("SoundService"),
+        }
+        local allObjects = {}
+        for _, root in ipairs(SCAN_ROOTS) do
+            local ok, children = pcall(function() return root:GetDescendants() end)
+            if ok then
+                for _, obj in ipairs(children) do
+                    table.insert(allObjects, obj)
+                end
+            end
+            -- Also add the root itself
+            table.insert(allObjects, root)
+        end
         local total = #allObjects
 
         statusLbl.Text = "Step 2/3 — Scanning "..total.." objects..."
