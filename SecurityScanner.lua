@@ -62,7 +62,11 @@ local SAFE_REMOTE_PATTERNS = {
     "loaded", "complete", "finished", "ready",
     "update", "sync", "notify", "alert",
     "display", "show", "hide", "refresh",
-    "dataLoaded", "dataReady",
+    "sound", "sfx", "music", "audio",
+    "effect", "vfx", "particle", "animation",
+    "ui", "gui", "hud", "screen",
+    "server", -- ServerSoundAdded etc are server→client notifications
+    "client",
 }
 
 local BAD_CODE_PATTERNS = {
