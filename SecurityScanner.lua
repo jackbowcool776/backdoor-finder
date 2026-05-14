@@ -936,23 +936,9 @@ end)
 makeSectionLbl(spyPanel, "LIVE LOG")
 
 -- Log scroll frame
-local spyScroll = Instance.new("ScrollingFrame")
-spyScroll.Size = UDim2.new(1,0,0,300)
-spyScroll.BackgroundColor3 = C.input
-spyScroll.BorderSizePixel = 0
-spyScroll.ScrollBarThickness = 4
-spyScroll.ScrollBarImageColor3 = C.accent
-spyScroll.CanvasSize = UDim2.new(0,0,0,0)
-spyScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
-spyScroll.ZIndex = 12 spyScroll.Parent = spyPanel
-Instance.new("UICorner",spyScroll).CornerRadius = UDim.new(0,8)
-Instance.new("UIPadding",spyScroll).PaddingLeft = UDim.new(0,6)
-Instance.new("UIPadding",spyScroll).PaddingTop = UDim.new(0,4)
-Instance.new("UIPadding",spyScroll).PaddingRight = UDim.new(0,6)
-
-local spyLayout = Instance.new("UIListLayout")
-spyLayout.Padding = UDim.new(0,2)
-spyLayout.Parent = spyScroll
+-- No nested scroll - entries go directly into spyPanel which already scrolls
+local spyScroll = spyPanel  -- alias so existing code works unchanged
+local spyLayout = nil  -- already has layout from makeTab
 
 local spyCountLabel = Instance.new("TextLabel")
 spyCountLabel.Size = UDim2.new(1,0,0,16)
@@ -962,6 +948,7 @@ spyCountLabel.Font = Enum.Font.GothamBold spyCountLabel.TextSize = 9
 spyCountLabel.TextXAlignment = Enum.TextXAlignment.Left
 spyCountLabel.Text = "0 remotes logged"
 spyCountLabel.ZIndex = 12 spyCountLabel.Parent = spyPanel
+spyCountLabel.LayoutOrder = 999
 
 local function addSpyEntry(method, remotePath, args, remoteObj)
     -- Apply filter
@@ -1180,7 +1167,7 @@ local function addSpyEntry(method, remotePath, args, remoteObj)
     spyCountLabel.Text = #spyLog.." remotes logged"
 
     -- Auto scroll to bottom
-    spyScroll.CanvasPosition = Vector2.new(0, spyLayout.AbsoluteContentSize.Y)
+    pcall(function() spyPanel.CanvasPosition = Vector2.new(0, 999999) end)
 end
 
 -- Hook into game metatable to intercept remote calls
@@ -1268,9 +1255,12 @@ spyToggleBtn.MouseButton1Click:Connect(function()
 end)
 
 spyClearBtn.MouseButton1Click:Connect(function()
-    for _, e in ipairs(spyLog) do pcall(function() e:Destroy() end) end
+    for _, e in ipairs(spyLog) do
+        pcall(function() e:Destroy() end)
+    end
     spyLog = {}
     spyCountLabel.Text = "0 remotes logged"
+    notify("Remote Spy", "Log cleared!")
 end)
 
 -- =====================
