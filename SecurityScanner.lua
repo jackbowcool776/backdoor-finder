@@ -90,8 +90,8 @@ local function addResult(severity, title, detail, scriptObj, source)
     elseif severity == "MED" then table.insert(scanResults.med, entry)
     else table.insert(scanResults.low, entry) end
 
-    if scriptObj and source and source ~= "" then
-        -- Check if already added
+    -- Add to flagged scripts if we have a script object (even if source unreadable)
+    if scriptObj then
         local already = false
         for _, s in ipairs(scanResults.flaggedScripts) do
             if s.path == scriptObj:GetFullName() then
@@ -100,11 +100,15 @@ local function addResult(severity, title, detail, scriptObj, source)
             end
         end
         if not already then
+            local src = source or ""
+            if src == "" then
+                src = "-- Source not readable from client (server-side script)\n-- Path: "..scriptObj:GetFullName()
+            end
             table.insert(scanResults.flaggedScripts, {
-                name    = scriptObj.Name,
-                path    = scriptObj:GetFullName(),
-                source  = source,
-                reasons = {"["..severity.."] "..title},
+                name     = scriptObj.Name,
+                path     = scriptObj:GetFullName(),
+                source   = src,
+                reasons  = {"["..severity.."] "..title},
                 severity = severity,
             })
         end
@@ -708,6 +712,22 @@ scanBtn.MouseButton1Click:Connect(function()
                 local name = obj.Name:lower()
                 for _, dn in ipairs(DANGEROUS_REMOTE_NAMES) do
                     if name:find(dn) then
+                        -- Add remote to flagged scripts tab with its full path
+                        local already = false
+                        for _, s in ipairs(scanResults.flaggedScripts) do
+                            if s.path == obj:GetFullName() then
+                                already = true break
+                            end
+                        end
+                        if not already then
+                            table.insert(scanResults.flaggedScripts, {
+                                name     = obj.Name,
+                                path     = obj:GetFullName(),
+                                source   = "-- This is a "..obj.ClassName.." (not a script)\n-- Path: "..obj:GetFullName().."\n-- Flagged because name suggests it modifies game state\n-- Check server scripts that connect to this remote",
+                                reasons  = {"[HIGH] Suspicious remote name: "..obj.Name},
+                                severity = "HIGH",
+                            })
+                        end
                         addResult("HIGH",
                             "Suspicious remote: "..obj.Name,
                             obj:GetFullName().." — name suggests it modifies game state",
