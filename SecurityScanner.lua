@@ -1185,31 +1185,65 @@ end
 
 -- Hook into game metatable to intercept remote calls
 local function startSpy()
-    local ok, mt = pcall(getrawmetatable, game)
-    if not ok then
-        notify("Remote Spy", "Failed to hook — getrawmetatable not available")
+    -- Check if required functions exist
+    if not getrawmetatable then
+        notify("Remote Spy", "❌ getrawmetatable not available")
+        print("[Spy] getrawmetatable missing")
+        return false
+    end
+    if not setreadonly then
+        notify("Remote Spy", "❌ setreadonly not available")
+        print("[Spy] setreadonly missing")
+        return false
+    end
+    if not newcclosure then
+        notify("Remote Spy", "❌ newcclosure not available")
+        print("[Spy] newcclosure missing")
         return false
     end
 
+    local ok, mt = pcall(getrawmetatable, game)
+    if not ok or not mt then
+        notify("Remote Spy", "❌ Failed to get metatable")
+        print("[Spy] getrawmetatable failed: "..tostring(mt))
+        return false
+    end
+
+    print("[Spy] Got metatable, hooking __namecall...")
+
     local oldNamecall = mt.__namecall
-    pcall(function() setreadonly(mt, false) end)
+    if not oldNamecall then
+        notify("Remote Spy", "❌ __namecall not found")
+        print("[Spy] __namecall is nil")
+        return false
+    end
+
+    local setOk = pcall(setreadonly, mt, false)
+    if not setOk then
+        notify("Remote Spy", "❌ setreadonly failed")
+        print("[Spy] setreadonly failed")
+        return false
+    end
 
     mt.__namecall = newcclosure(function(self, ...)
         local method = getnamecallmethod()
         if spyOn then
-            if (method == "FireServer" and showFire)
-            or (method == "InvokeServer" and showInvoke) then
+            if method == "FireServer" or method == "InvokeServer" then
                 local args = {...}
                 local path = "unknown"
                 pcall(function() path = self:GetFullName() end)
                 local remoteRef = self
-                pcall(function() addSpyEntry(method, path, args, remoteRef) end)
+                -- Only log RemoteEvents and RemoteFunctions
+                if self:IsA("RemoteEvent") or self:IsA("RemoteFunction") then
+                    pcall(function() addSpyEntry(method, path, args, remoteRef) end)
+                end
             end
         end
         return oldNamecall(self, ...)
     end)
 
-    pcall(function() setreadonly(mt, true) end)
+    pcall(setreadonly, mt, true)
+    print("[Spy] Hook installed successfully!")
     return true
 end
 
