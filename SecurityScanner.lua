@@ -52,9 +52,17 @@ local DANGEROUS_REMOTE_NAMES = {
     "give","award","add","set","admin","ban","kick",
     "currency","coins","cash","gems","points","robux",
     "level","xp","damage","kill","spawn","delete",
-    "remove","create","load","save","data","purchase",
+    "remove","create","purchase",
     "buy","unlock","item","weapon","tool","badge",
     "teleport","tp","god","health","speed","fly","credits",
+}
+
+-- Safe patterns that look dangerous but aren't
+local SAFE_REMOTE_PATTERNS = {
+    "loaded", "complete", "finished", "ready",
+    "update", "sync", "notify", "alert",
+    "display", "show", "hide", "refresh",
+    "dataLoaded", "dataReady",
 }
 
 local BAD_CODE_PATTERNS = {
@@ -710,8 +718,16 @@ scanBtn.MouseButton1Click:Connect(function()
             if obj:IsA("RemoteEvent") or obj:IsA("RemoteFunction") then
                 remoteCount = remoteCount + 1
                 local name = obj.Name:lower()
-                for _, dn in ipairs(DANGEROUS_REMOTE_NAMES) do
-                    if name:find(dn) then
+
+                -- Check if it matches a safe pattern first
+                local isSafe = false
+                for _, sp in ipairs(SAFE_REMOTE_PATTERNS) do
+                    if name:find(sp:lower()) then isSafe = true break end
+                end
+
+                if not isSafe then
+                    for _, dn in ipairs(DANGEROUS_REMOTE_NAMES) do
+                        if name:find(dn) then
                         -- Add remote to flagged scripts tab with its full path
                         local already = false
                         for _, s in ipairs(scanResults.flaggedScripts) do
@@ -735,6 +751,7 @@ scanBtn.MouseButton1Click:Connect(function()
                         break
                     end
                 end
+                end -- end not isSafe
 
             elseif obj:IsA("Script") or obj:IsA("LocalScript") or obj:IsA("ModuleScript") then
                 local src = ""
