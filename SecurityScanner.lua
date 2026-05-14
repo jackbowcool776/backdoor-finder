@@ -602,36 +602,36 @@ local function populateScripts()
 
             makeSectionLbl(viewerPanel, "Source Code")
 
-            -- Source code box
-            local srcBox=Instance.new("ScrollingFrame")
-            srcBox.Size=UDim2.new(1,0,0,300)
-            srcBox.BackgroundColor3=C.input
-            srcBox.BorderSizePixel=0
-            srcBox.ScrollBarThickness=4
-            srcBox.ScrollBarImageColor3=C.accent
-            srcBox.CanvasSize=UDim2.new(0,0,0,0)
-            srcBox.AutomaticCanvasSize=Enum.AutomaticSize.Y
-            srcBox.ZIndex=12 srcBox.Parent=viewerPanel
-            Instance.new("UICorner",srcBox).CornerRadius=UDim.new(0,8)
-            Instance.new("UIPadding",srcBox).PaddingLeft=UDim.new(0,6)
-            Instance.new("UIPadding",srcBox).PaddingTop=UDim.new(0,6)
+            -- Source directly in viewerPanel as expanding label (no nested scroll)
+            local srcLabel = Instance.new("TextLabel")
+            srcLabel.Size = UDim2.new(1,0,0,10)
+            srcLabel.AutomaticSize = Enum.AutomaticSize.Y
+            srcLabel.BackgroundColor3 = C.input
+            srcLabel.TextColor3 = C.text
+            srcLabel.Font = Enum.Font.Code
+            srcLabel.TextSize = 11
+            srcLabel.TextXAlignment = Enum.TextXAlignment.Left
+            srcLabel.TextWrapped = true
+            srcLabel.RichText = false
+            srcLabel.ZIndex = 12
+            srcLabel.Parent = viewerPanel
+            Instance.new("UICorner", srcLabel).CornerRadius = UDim.new(0,8)
+            local srcPad = Instance.new("UIPadding")
+            srcPad.PaddingLeft = UDim.new(0,8)
+            srcPad.PaddingTop = UDim.new(0,6)
+            srcPad.PaddingBottom = UDim.new(0,6)
+            srcPad.PaddingRight = UDim.new(0,8)
+            srcPad.Parent = srcLabel
 
-            -- Display source code
-            local srcLabel=Instance.new("TextLabel")
-            srcLabel.Size=UDim2.new(1,-12,0,10)
-            srcLabel.AutomaticSize=Enum.AutomaticSize.Y
-            srcLabel.BackgroundTransparency=1 srcLabel.TextColor3=C.text
-            srcLabel.Font=Enum.Font.Code srcLabel.TextSize=11
-            srcLabel.TextXAlignment=Enum.TextXAlignment.Left
-            srcLabel.TextWrapped=true
-            srcLabel.RichText=false
-            -- Limit to first 5000 chars to avoid overflow
-            local displaySrc = scriptData.source
-            if #displaySrc > 5000 then
-                displaySrc = displaySrc:sub(1,5000).."\n\n[... truncated, copy to see full source ...]"
+            local displaySrc = scriptData.source or ""
+            if #displaySrc > 3000 then
+                displaySrc = displaySrc:sub(1,3000).."\n\n[... truncated — click Copy for full source ...]"
             end
-            srcLabel.Text=displaySrc
-            srcLabel.ZIndex=13 srcLabel.Parent=srcBox
+            if displaySrc == "" then
+                displaySrc = "-- Source not readable from client (server-side script)"
+            end
+            srcLabel.Text = displaySrc
+
 
             -- Copy source button
             makeBtn(viewerPanel, "📋 Copy Source to Clipboard", C.blue, function()
