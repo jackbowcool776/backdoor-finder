@@ -647,9 +647,7 @@ local function populateScripts()
                                 -- Show this script's source
                                 local displaySrc = refData.source
                                 if #displaySrc > 3000 then
-                                    displaySrc = displaySrc:sub(1,3000).."
-
-[... truncated ...]"
+                                    displaySrc = displaySrc:sub(1,3000).."\n\n[... truncated ...]"
                                 end
                                 -- Find and update the source label
                                 for _, c in pairs(viewerPanel:GetChildren()) do
