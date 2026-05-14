@@ -978,9 +978,12 @@ local function addSpyEntry(method, remotePath, args, remoteObj)
     local col = method == "FireServer" and C.accent or C.yellow
 
     local entry = Instance.new("Frame")
-    entry.Size = UDim2.new(1,0,0,42)
+    entry.Size = UDim2.new(1,0,0,56)
     entry.BackgroundColor3 = C.row
-    entry.BorderSizePixel = 0 entry.ZIndex = 13 entry.Parent = spyScroll
+    entry.BorderSizePixel = 0
+    entry.ZIndex = 13
+    entry.LayoutOrder = #spyLog + 1
+    entry.Parent = spyPanel  -- directly in panel, no nested scroll
     Instance.new("UICorner",entry).CornerRadius = UDim.new(0,5)
 
     -- Color stripe
@@ -1016,7 +1019,7 @@ local function addSpyEntry(method, remotePath, args, remoteObj)
 
     -- Args
     local aLbl = Instance.new("TextLabel")
-    aLbl.Size = UDim2.new(1,-12,0,14) aLbl.Position = UDim2.new(0,8,0,36)
+    aLbl.Size = UDim2.new(1,-12,0,14) aLbl.Position = UDim2.new(0,8,0,38)
     aLbl.BackgroundTransparency = 1 aLbl.TextColor3 = C.sub
     aLbl.Font = Enum.Font.Gotham aLbl.TextSize = 9
     aLbl.TextXAlignment = Enum.TextXAlignment.Left
