@@ -116,7 +116,6 @@ local function addPass(title)
 end
 
 local function runScan()
-    -- Reset
     scanResults.high = {}
     scanResults.med  = {}
     scanResults.low  = {}
@@ -126,7 +125,7 @@ local function runScan()
 
     print("[Scanner] Starting scan...")
 
-    -- FilteringEnabled
+    -- FilteringEnabled check
     if workspace.FilteringEnabled then
         addPass("FilteringEnabled is ON")
     else
@@ -134,9 +133,18 @@ local function runScan()
             "Clients can replicate to server. Enable in Workspace properties immediately.",nil,"")
     end
 
-    -- Scan remotes
+    -- Collect all at once then batch process
+    local allObjects = game:GetDescendants()
     local remoteCount = 0
-    for _, obj in pairs(game:GetDescendants()) do
+    local scriptCount = 0
+    local BATCH = 40
+
+    for i, obj in ipairs(allObjects) do
+        -- Yield every BATCH items to keep game responsive
+        if i % BATCH == 0 then
+            task.wait()
+        end
+
         if obj:IsA("RemoteEvent") or obj:IsA("RemoteFunction") then
             remoteCount = remoteCount + 1
             local name = obj.Name:lower()
@@ -149,20 +157,12 @@ local function runScan()
                     break
                 end
             end
-        end
-    end
-    if remoteCount == 0 then addPass("No RemoteEvents found") end
 
-    -- Scan scripts
-    local scriptCount = 0
-    for _, obj in pairs(game:GetDescendants()) do
-        if obj:IsA("Script") or obj:IsA("LocalScript") or obj:IsA("ModuleScript") then
+        elseif obj:IsA("Script") or obj:IsA("LocalScript") or obj:IsA("ModuleScript") then
             local src = ""
             local ok = pcall(function() src = obj.Source end)
             if ok and src ~= "" then
                 scriptCount = scriptCount + 1
-
-                -- Check backdoor patterns
                 for _, bp in ipairs(BACKDOOR_PATTERNS) do
                     if src:lower():find(bp:lower()) then
                         addResult("HIGH",
@@ -172,8 +172,6 @@ local function runScan()
                         break
                     end
                 end
-
-                -- Check bad code patterns
                 for _, bp in ipairs(BAD_CODE_PATTERNS) do
                     if src:lower():find(bp.p:lower()) then
                         addResult(bp.s,
@@ -184,13 +182,14 @@ local function runScan()
                 end
             end
         end
-        task.wait() -- yield so game doesn't freeze
     end
 
-    print("[Scanner] Scanned "..scriptCount.." scripts")
-    print("[Scanner] HIGH: "..#scanResults.high.." MED: "..#scanResults.med.." PASS: "..#scanResults.pass)
+    if remoteCount == 0 then addPass("No RemoteEvents found") end
+    addPass("Scanned "..scriptCount.." scripts, "..remoteCount.." remotes")
+    print("[Scanner] Done — HIGH:"..#scanResults.high.." MED:"..#scanResults.med.." PASS:"..#scanResults.pass)
     scanDone = true
 end
+
 
 -- =====================
 -- GUI
