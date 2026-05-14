@@ -131,6 +131,32 @@ local function addPass(title)
     table.insert(scanResults.pass, title)
 end
 
+-- Find scripts that reference a given remote name
+local function findScriptsUsingRemote(remoteName)
+    local found = {}
+    local roots = {
+        workspace,
+        game:GetService("ReplicatedStorage"),
+        game:GetService("StarterGui"),
+        game:GetService("StarterPack"),
+        game:GetService("StarterPlayer"),
+    }
+    for _, root in ipairs(roots) do
+        pcall(function()
+            for _, obj in ipairs(root:GetDescendants()) do
+                if obj:IsA("Script") or obj:IsA("LocalScript") or obj:IsA("ModuleScript") then
+                    local src = ""
+                    pcall(function() src = obj.Source end)
+                    if src ~= "" and src:find(remoteName) then
+                        table.insert(found, {name=obj.Name, path=obj:GetFullName(), source=src})
+                    end
+                end
+            end
+        end)
+    end
+    return found
+end
+
 local function runScan()
     scanResults.high = {}
     scanResults.med  = {}
@@ -604,6 +630,39 @@ local function populateScripts()
                 makeLabel(rr, reason, C.red, 10)
             end
 
+            -- If it's a remote, search for scripts that reference it
+            if scriptData.source:find("This is a Remote") then
+                makeSectionLbl(viewerPanel, "Scripts Using This Remote")
+                local refs = findScriptsUsingRemote(scriptData.name)
+                if #refs == 0 then
+                    local nr = makeRow(viewerPanel, 26)
+                    makeLabel(nr, "No readable scripts found referencing this remote", C.sub, 11)
+                else
+                    for _, ref in ipairs(refs) do
+                        local rr = makeRow(viewerPanel, 40)
+                        makeLabel(rr, "📜 "..ref.name.." — "..ref.path, C.accent, 11)
+                        local refData = ref
+                        rr.InputBegan:Connect(function(i)
+                            if i.UserInputType == Enum.UserInputType.MouseButton1 then
+                                -- Show this script's source
+                                local displaySrc = refData.source
+                                if #displaySrc > 3000 then
+                                    displaySrc = displaySrc:sub(1,3000).."
+
+[... truncated ...]"
+                                end
+                                -- Find and update the source label
+                                for _, c in pairs(viewerPanel:GetChildren()) do
+                                    if c:IsA("TextLabel") and c.Font == Enum.Font.Code then
+                                        c.Text = displaySrc
+                                    end
+                                end
+                            end
+                        end)
+                    end
+                end
+            end
+
             makeSectionLbl(viewerPanel, "Source Code")
 
             -- Source directly in viewerPanel as expanding label (no nested scroll)
@@ -743,7 +802,7 @@ scanBtn.MouseButton1Click:Connect(function()
                             table.insert(scanResults.flaggedScripts, {
                                 name     = obj.Name,
                                 path     = obj:GetFullName(),
-                                source   = "-- This is a "..obj.ClassName.." (not a script)\n-- Path: "..obj:GetFullName().."\n-- Flagged because name suggests it modifies game state\n-- Check server scripts that connect to this remote",
+                                source   = "-- This is a "..obj.ClassName.."\n-- Path: "..obj:GetFullName().."\n-- Flagged because name suggests it modifies game state",
                                 reasons  = {"[HIGH] Suspicious remote name: "..obj.Name},
                                 severity = "HIGH",
                             })
