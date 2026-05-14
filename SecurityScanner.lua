@@ -634,7 +634,8 @@ end
 scanBtn.MouseButton1Click:Connect(function()
     scanBtn.Text = "⏳ Scanning..."
     scanBtn.BackgroundColor3 = C.orange
-    statusLbl.Text = "Scanning... please wait"
+    statusLbl.Text = "Collecting objects..."
+    statusLbl.TextColor3 = C.orange
 
     highNum.Text = "--"
     medNum.Text  = "--"
@@ -642,27 +643,105 @@ scanBtn.MouseButton1Click:Connect(function()
     flagNum.Text = "--"
 
     task.spawn(function()
-        runScan()
+        -- Step 1: collect
+        statusLbl.Text = "Step 1/3 — Collecting game objects..."
+        task.wait()
+        local allObjects = game:GetDescendants()
+        local total = #allObjects
 
-        -- Update overview
+        statusLbl.Text = "Step 2/3 — Scanning "..total.." objects..."
+        task.wait()
+
+        -- Reset results
+        scanResults.high = {}
+        scanResults.med  = {}
+        scanResults.low  = {}
+        scanResults.pass = {}
+        scanResults.flaggedScripts = {}
+        scanDone = false
+
+        if workspace.FilteringEnabled then
+            addPass("FilteringEnabled is ON")
+        else
+            addResult("HIGH","FilteringEnabled is OFF!",
+                "Enable in Workspace properties immediately.",nil,"")
+        end
+
+        local remoteCount = 0
+        local scriptCount = 0
+        local BATCH = 40
+
+        for i, obj in ipairs(allObjects) do
+            if i % BATCH == 0 then
+                local pct = math.floor((i/total)*100)
+                statusLbl.Text = "Scanning... "..pct.."% ("..i.."/"..total..")"
+                task.wait()
+            end
+
+            if obj:IsA("RemoteEvent") or obj:IsA("RemoteFunction") then
+                remoteCount = remoteCount + 1
+                local name = obj.Name:lower()
+                for _, dn in ipairs(DANGEROUS_REMOTE_NAMES) do
+                    if name:find(dn) then
+                        addResult("HIGH",
+                            "Suspicious remote: "..obj.Name,
+                            obj:GetFullName().." — name suggests it modifies game state",
+                            nil, "")
+                        break
+                    end
+                end
+
+            elseif obj:IsA("Script") or obj:IsA("LocalScript") or obj:IsA("ModuleScript") then
+                local src = ""
+                local ok = pcall(function() src = obj.Source end)
+                if ok and src ~= "" then
+                    scriptCount = scriptCount + 1
+                    for _, bp in ipairs(BACKDOOR_PATTERNS) do
+                        if src:lower():find(bp:lower()) then
+                            addResult("HIGH",
+                                "⚠️ Backdoor in "..obj.Name,
+                                "Contains '"..bp.."'!",
+                                obj, src)
+                            break
+                        end
+                    end
+                    for _, bp in ipairs(BAD_CODE_PATTERNS) do
+                        if src:lower():find(bp.p:lower()) then
+                            addResult(bp.s,
+                                bp.desc.." in "..obj.Name,
+                                obj:GetFullName().." — "..bp.desc,
+                                obj, src)
+                        end
+                    end
+                end
+            end
+        end
+
+        if remoteCount == 0 then addPass("No RemoteEvents found") end
+        addPass("Scanned "..scriptCount.." scripts, "..remoteCount.." remotes")
+        scanDone = true
+
+        -- Step 3: build UI
+        statusLbl.Text = "Step 3/3 — Building results..."
+        task.wait()
+
         highNum.Text = tostring(#scanResults.high)
         medNum.Text  = tostring(#scanResults.med)
         passNum.Text = tostring(#scanResults.pass)
         flagNum.Text = tostring(#scanResults.flaggedScripts)
 
-        -- Populate other tabs
         populateIssues()
         populateScripts()
 
         scanBtn.Text = "▶  Run Scan Again"
         scanBtn.BackgroundColor3 = C.green
-        statusLbl.Text = "Scan complete! "..#scanResults.high.." HIGH, "
-            ..#scanResults.med.." MED, "..#scanResults.pass.." passed"
+        statusLbl.TextColor3 = C.green
+        statusLbl.Text = "Done! "..#scanResults.high.." HIGH, "..#scanResults.med.." MED, "..#scanResults.pass.." passed"
 
         if #scanResults.high > 0 then
-            notify("Scanner", #scanResults.high.." HIGH severity issues found!")
+            notify("Scanner", #scanResults.high.." HIGH issues found!")
         else
-            notify("Scanner", "Scan complete! No HIGH issues found.")
+            notify("Scanner", "Scan complete! No HIGH issues.")
         end
     end)
 end)
