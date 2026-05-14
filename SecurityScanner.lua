@@ -870,6 +870,375 @@ scanBtn.MouseButton1Click:Connect(function()
 end)
 
 -- =====================
+-- REMOTE SPY TAB
+-- =====================
+local spyPanel = makeTab("Remote Spy", "🔍")
+
+local spyOn = false
+local spyLog = {}
+local spyConn = nil
+local MAX_SPY_ENTRIES = 200
+
+-- Controls
+makeSectionLbl(spyPanel, "CONTROLS")
+
+local spyToggleBtn = makeBtn(spyPanel, "▶  Start Remote Spy", C.green, nil)
+local spyClearBtn  = makeBtn(spyPanel, "Clear Log", C.row, nil)
+
+-- Filter input
+local filterRow = Instance.new("Frame")
+filterRow.Size = UDim2.new(1,0,0,28)
+filterRow.BackgroundColor3 = C.input
+filterRow.BorderSizePixel = 0
+filterRow.ZIndex = 12 filterRow.Parent = spyPanel
+Instance.new("UICorner",filterRow).CornerRadius = UDim.new(0,7)
+
+local filterBox = Instance.new("TextBox")
+filterBox.Size = UDim2.new(1,-12,1,0)
+filterBox.Position = UDim2.new(0,6,0,0)
+filterBox.BackgroundTransparency = 1
+filterBox.TextColor3 = C.text
+filterBox.Font = Enum.Font.Gotham filterBox.TextSize = 11
+filterBox.PlaceholderText = "Filter by remote name..."
+filterBox.Text = "" filterBox.BorderSizePixel = 0
+filterBox.ClearTextOnFocus = false filterBox.ZIndex = 13
+filterBox.Parent = filterRow
+
+-- Direction filter
+local dirRow = Instance.new("Frame")
+dirRow.Size = UDim2.new(1,0,0,26)
+dirRow.BackgroundTransparency = 1
+dirRow.ZIndex = 12 dirRow.Parent = spyPanel
+
+local dirLayout = Instance.new("UIListLayout")
+dirLayout.FillDirection = Enum.FillDirection.Horizontal
+dirLayout.Padding = UDim.new(0,4)
+dirLayout.Parent = dirRow
+
+local showFire   = true
+local showInvoke = true
+local firBtn = makeBtn(dirRow, "FireServer ✅", C.blue, nil)
+local invBtn = makeBtn(dirRow, "InvokeServer ✅", C.blue, nil)
+firBtn.Size = UDim2.new(0.5,-2,1,0)
+invBtn.Size = UDim2.new(0.5,-2,1,0)
+
+firBtn.MouseButton1Click:Connect(function()
+    showFire = not showFire
+    firBtn.Text = showFire and "FireServer ✅" or "FireServer ❌"
+    firBtn.BackgroundColor3 = showFire and C.blue or C.row
+end)
+invBtn.MouseButton1Click:Connect(function()
+    showInvoke = not showInvoke
+    invBtn.Text = showInvoke and "InvokeServer ✅" or "InvokeServer ❌"
+    invBtn.BackgroundColor3 = showInvoke and C.blue or C.row
+end)
+
+makeSectionLbl(spyPanel, "LIVE LOG")
+
+-- Log scroll frame
+local spyScroll = Instance.new("ScrollingFrame")
+spyScroll.Size = UDim2.new(1,0,0,300)
+spyScroll.BackgroundColor3 = C.input
+spyScroll.BorderSizePixel = 0
+spyScroll.ScrollBarThickness = 4
+spyScroll.ScrollBarImageColor3 = C.accent
+spyScroll.CanvasSize = UDim2.new(0,0,0,0)
+spyScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+spyScroll.ZIndex = 12 spyScroll.Parent = spyPanel
+Instance.new("UICorner",spyScroll).CornerRadius = UDim.new(0,8)
+Instance.new("UIPadding",spyScroll).PaddingLeft = UDim.new(0,6)
+Instance.new("UIPadding",spyScroll).PaddingTop = UDim.new(0,4)
+Instance.new("UIPadding",spyScroll).PaddingRight = UDim.new(0,6)
+
+local spyLayout = Instance.new("UIListLayout")
+spyLayout.Padding = UDim.new(0,2)
+spyLayout.Parent = spyScroll
+
+local spyCountLabel = Instance.new("TextLabel")
+spyCountLabel.Size = UDim2.new(1,0,0,16)
+spyCountLabel.BackgroundTransparency = 1
+spyCountLabel.TextColor3 = C.sub
+spyCountLabel.Font = Enum.Font.GothamBold spyCountLabel.TextSize = 9
+spyCountLabel.TextXAlignment = Enum.TextXAlignment.Left
+spyCountLabel.Text = "0 remotes logged"
+spyCountLabel.ZIndex = 12 spyCountLabel.Parent = spyPanel
+
+local function addSpyEntry(method, remotePath, args, remoteObj)
+    -- Apply filter
+    local filter = filterBox.Text:lower()
+    if filter ~= "" and not remotePath:lower():find(filter) then return end
+    if method == "FireServer" and not showFire then return end
+    if method == "InvokeServer" and not showInvoke then return end
+
+    -- Build args string
+    local argStr = ""
+    for i, v in ipairs(args) do
+        local vs = ""
+        if type(v) == "table" then vs = "{table}"
+        elseif type(v) == "userdata" then
+            pcall(function()
+                if typeof(v) == "Instance" then vs = v:GetFullName()
+                elseif typeof(v) == "Vector3" then vs = "("..math.floor(v.X)..","..math.floor(v.Y)..","..math.floor(v.Z)..")"
+                elseif typeof(v) == "CFrame" then vs = "CFrame"
+                else vs = tostring(v) end
+            end)
+            if vs == "" then vs = typeof(v) end
+        else vs = tostring(v) end
+        argStr = argStr..(i>1 and ", " or "")..vs
+    end
+
+    -- Color by method
+    local col = method == "FireServer" and C.accent or C.yellow
+
+    local entry = Instance.new("Frame")
+    entry.Size = UDim2.new(1,0,0,42)
+    entry.BackgroundColor3 = C.row
+    entry.BorderSizePixel = 0 entry.ZIndex = 13 entry.Parent = spyScroll
+    Instance.new("UICorner",entry).CornerRadius = UDim.new(0,5)
+
+    -- Color stripe
+    local stripe = Instance.new("Frame")
+    stripe.Size = UDim2.new(0,3,1,0)
+    stripe.BackgroundColor3 = col
+    stripe.BorderSizePixel = 0 stripe.ZIndex = 14 stripe.Parent = entry
+    Instance.new("UICorner",stripe).CornerRadius = UDim.new(0,3)
+
+    -- Method label
+    local mLbl = Instance.new("TextLabel")
+    mLbl.Size = UDim2.new(0,90,0,18) mLbl.Position = UDim2.new(0,8,0,2)
+    mLbl.BackgroundTransparency = 1 mLbl.TextColor3 = col
+    mLbl.Font = Enum.Font.GothamBold mLbl.TextSize = 9
+    mLbl.TextXAlignment = Enum.TextXAlignment.Left
+    mLbl.Text = method mLbl.ZIndex = 14 mLbl.Parent = entry
+
+    -- Timestamp
+    local tLbl = Instance.new("TextLabel")
+    tLbl.Size = UDim2.new(0,60,0,18) tLbl.Position = UDim2.new(1,-62,0,2)
+    tLbl.BackgroundTransparency = 1 tLbl.TextColor3 = C.sub
+    tLbl.Font = Enum.Font.Gotham tLbl.TextSize = 9
+    tLbl.Text = os.date("%H:%M:%S") tLbl.ZIndex = 14 tLbl.Parent = entry
+
+    -- Remote path
+    local rLbl = Instance.new("TextLabel")
+    rLbl.Size = UDim2.new(1,-12,0,16) rLbl.Position = UDim2.new(0,8,0,20)
+    rLbl.BackgroundTransparency = 1 rLbl.TextColor3 = C.text
+    rLbl.Font = Enum.Font.GothamBold rLbl.TextSize = 10
+    rLbl.TextXAlignment = Enum.TextXAlignment.Left
+    rLbl.TextTruncate = Enum.TextTruncate.AtEnd
+    rLbl.Text = remotePath rLbl.ZIndex = 14 rLbl.Parent = entry
+
+    -- Args
+    local aLbl = Instance.new("TextLabel")
+    aLbl.Size = UDim2.new(1,-12,0,14) aLbl.Position = UDim2.new(0,8,0,36)
+    aLbl.BackgroundTransparency = 1 aLbl.TextColor3 = C.sub
+    aLbl.Font = Enum.Font.Gotham aLbl.TextSize = 9
+    aLbl.TextXAlignment = Enum.TextXAlignment.Left
+    aLbl.TextTruncate = Enum.TextTruncate.AtEnd
+    aLbl.Text = argStr == "" and "(no args)" or "Args: "..argStr
+    aLbl.ZIndex = 14 aLbl.Parent = entry
+
+    -- Click to copy / right click to repeat
+    entry.InputBegan:Connect(function(i)
+        if i.UserInputType == Enum.UserInputType.MouseButton1 then
+            local copyText = method.." | "..remotePath.."\nArgs: "..argStr
+            pcall(function() setclipboard(copyText) end)
+            notify("Remote Spy", "Copied: "..remotePath)
+        end
+    end)
+
+    -- Repeat button
+    local repeatBtn = Instance.new("TextButton")
+    repeatBtn.Size = UDim2.new(0,52,0,16)
+    repeatBtn.Position = UDim2.new(1,-56,0,2)
+    repeatBtn.BackgroundColor3 = C.orange
+    repeatBtn.TextColor3 = Color3.new(1,1,1)
+    repeatBtn.Font = Enum.Font.GothamBold repeatBtn.TextSize = 9
+    repeatBtn.Text = "Repeat"
+    repeatBtn.BorderSizePixel = 0 repeatBtn.ZIndex = 15 repeatBtn.Parent = entry
+    Instance.new("UICorner",repeatBtn).CornerRadius = UDim.new(0,4)
+
+    -- Store the actual remote reference and args for repeating
+    local capturedRemote = remoteObj
+    local capturedArgs = args
+    local capturedMethod = method
+    local repeatCount = 1
+
+    repeatBtn.MouseButton1Click:Connect(function()
+        -- Open repeat dialog
+        for _, c in pairs(viewerPanel:GetChildren()) do
+            if not c:IsA("UIListLayout") and not c:IsA("UIPadding") then
+                c:Destroy()
+            end
+        end
+
+        makeSectionLbl(viewerPanel, "Repeat Remote — "..remotePath)
+
+        -- Show remote info
+        local infoRow = makeRow(viewerPanel, 44)
+        infoRow.BackgroundColor3 = Color3.fromRGB(20,20,36)
+        local infoLbl = Instance.new("TextLabel")
+        infoLbl.Size = UDim2.new(1,-12,1,0) infoLbl.Position = UDim2.new(0,6,0,0)
+        infoLbl.BackgroundTransparency = 1 infoLbl.TextColor3 = C.accent
+        infoLbl.Font = Enum.Font.GothamBold infoLbl.TextSize = 11
+        infoLbl.TextXAlignment = Enum.TextXAlignment.Left
+        infoLbl.TextWrapped = true
+        infoLbl.Text = capturedMethod.." → "..remotePath.."\nArgs: "..argStr
+        infoLbl.ZIndex = 13 infoLbl.Parent = infoRow
+
+        -- Count input
+        makeSectionLbl(viewerPanel, "HOW MANY TIMES")
+        local countRow = makeRow(viewerPanel, 30)
+        countRow.BackgroundColor3 = C.input
+        local countBox = Instance.new("TextBox")
+        countBox.Size = UDim2.new(1,-12,1,0) countBox.Position = UDim2.new(0,6,0,0)
+        countBox.BackgroundTransparency = 1
+        countBox.TextColor3 = C.text
+        countBox.Font = Enum.Font.GothamBold countBox.TextSize = 14
+        countBox.Text = "1" countBox.ClearTextOnFocus = false
+        countBox.BorderSizePixel = 0 countBox.ZIndex = 13 countBox.Parent = countRow
+        countBox.Changed:Connect(function(p)
+            if p == "Text" then
+                local f = countBox.Text:gsub("[^%d]","")
+                if f ~= countBox.Text then countBox.Text = f end
+                local v = tonumber(f) if v then repeatCount = math.clamp(v,1,1000) end
+            end
+        end)
+
+        -- Delay input
+        makeSectionLbl(viewerPanel, "DELAY BETWEEN EACH (seconds)")
+        local delayRow = makeRow(viewerPanel, 30)
+        delayRow.BackgroundColor3 = C.input
+        local delayBox = Instance.new("TextBox")
+        delayBox.Size = UDim2.new(1,-12,1,0) delayBox.Position = UDim2.new(0,6,0,0)
+        delayBox.BackgroundTransparency = 1
+        delayBox.TextColor3 = C.text
+        delayBox.Font = Enum.Font.GothamBold delayBox.TextSize = 14
+        delayBox.Text = "0.1" delayBox.ClearTextOnFocus = false
+        delayBox.BorderSizePixel = 0 delayBox.ZIndex = 13 delayBox.Parent = delayRow
+
+        -- Status label
+        local statusRow = makeRow(viewerPanel, 26)
+        statusRow.BackgroundTransparency = 1
+        local statusLbl2 = Instance.new("TextLabel")
+        statusLbl2.Size = UDim2.new(1,-12,1,0) statusLbl2.Position = UDim2.new(0,6,0,0)
+        statusLbl2.BackgroundTransparency = 1 statusLbl2.TextColor3 = C.sub
+        statusLbl2.Font = Enum.Font.Gotham statusLbl2.TextSize = 11
+        statusLbl2.TextXAlignment = Enum.TextXAlignment.Left
+        statusLbl2.Text = "Ready to fire" statusLbl2.ZIndex = 13 statusLbl2.Parent = statusRow
+
+        -- Fire button
+        local fireBtn = makeBtn(viewerPanel, "🔥 Fire "..repeatCount.."x", C.red, nil)
+        countBox.Changed:Connect(function(p)
+            if p == "Text" then
+                local v = tonumber(countBox.Text)
+                if v then fireBtn.Text = "🔥 Fire "..v.."x" end
+            end
+        end)
+
+        local firing = false
+        fireBtn.MouseButton1Click:Connect(function()
+            if firing then return end
+            local count = tonumber(countBox.Text) or 1
+            local delay = tonumber(delayBox.Text) or 0.1
+            count = math.clamp(count, 1, 1000)
+            delay = math.clamp(delay, 0.01, 10)
+
+            firing = true
+            fireBtn.Text = "Firing..."
+            fireBtn.BackgroundColor3 = C.orange
+
+            task.spawn(function()
+                for i = 1, count do
+                    pcall(function()
+                        if capturedMethod == "FireServer" then
+                            capturedRemote:FireServer(table.unpack(capturedArgs))
+                        elseif capturedMethod == "InvokeServer" then
+                            capturedRemote:InvokeServer(table.unpack(capturedArgs))
+                        end
+                    end)
+                    statusLbl2.Text = "Fired "..i.."/"..count
+                    if i < count then task.wait(delay) end
+                end
+                firing = false
+                fireBtn.Text = "🔥 Fire "..count.."x"
+                fireBtn.BackgroundColor3 = C.red
+                statusLbl2.Text = "Done! Fired "..count.." times"
+                notify("Remote Spy", "Fired "..remotePath.." "..count.."x")
+            end)
+        end)
+
+        switchTab("Viewer")
+    end)
+
+    -- Trim old entries
+    table.insert(spyLog, entry)
+    if #spyLog > MAX_SPY_ENTRIES then
+        local old = table.remove(spyLog, 1)
+        pcall(function() old:Destroy() end)
+    end
+
+    spyCountLabel.Text = #spyLog.." remotes logged"
+
+    -- Auto scroll to bottom
+    spyScroll.CanvasPosition = Vector2.new(0, spyLayout.AbsoluteContentSize.Y)
+end
+
+-- Hook into game metatable to intercept remote calls
+local function startSpy()
+    local ok, mt = pcall(getrawmetatable, game)
+    if not ok then
+        notify("Remote Spy", "Failed to hook — getrawmetatable not available")
+        return false
+    end
+
+    local oldNamecall = mt.__namecall
+    pcall(function() setreadonly(mt, false) end)
+
+    mt.__namecall = newcclosure(function(self, ...)
+        local method = getnamecallmethod()
+        if spyOn then
+            if (method == "FireServer" and showFire)
+            or (method == "InvokeServer" and showInvoke) then
+                local args = {...}
+                local path = "unknown"
+                pcall(function() path = self:GetFullName() end)
+                local remoteRef = self
+                pcall(function() addSpyEntry(method, path, args, remoteRef) end)
+            end
+        end
+        return oldNamecall(self, ...)
+    end)
+
+    pcall(function() setreadonly(mt, true) end)
+    return true
+end
+
+-- Toggle spy
+spyToggleBtn.MouseButton1Click:Connect(function()
+    spyOn = not spyOn
+    if spyOn then
+        local ok = startSpy()
+        if ok then
+            spyToggleBtn.Text = "◼  Stop Remote Spy"
+            spyToggleBtn.BackgroundColor3 = C.red
+            notify("Remote Spy", "Started! All FireServer/InvokeServer calls will be logged.")
+        else
+            spyOn = false
+        end
+    else
+        spyToggleBtn.Text = "▶  Start Remote Spy"
+        spyToggleBtn.BackgroundColor3 = C.green
+        notify("Remote Spy", "Stopped.")
+    end
+end)
+
+spyClearBtn.MouseButton1Click:Connect(function()
+    for _, e in ipairs(spyLog) do pcall(function() e:Destroy() end) end
+    spyLog = {}
+    spyCountLabel.Text = "0 remotes logged"
+end)
+
+-- =====================
 -- INITIAL STATE
 -- =====================
 switchTab("Overview")
