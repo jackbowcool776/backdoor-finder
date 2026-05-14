@@ -1,218 +1,676 @@
--- Security Scanner
--- Scans YOUR game for vulnerable RemoteEvents and bad code patterns
--- Run this in your own game to find security issues
+-- Security Scanner v2
+-- GUI control panel + flagged script viewer
 
-local Players = game:GetService("Players")
-local StarterGui = game:GetService("StarterGui")
+local Players          = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local TweenService     = game:GetService("TweenService")
+local StarterGui       = game:GetService("StarterGui")
+local RunService       = game:GetService("RunService")
+
+local LocalPlayer = Players.LocalPlayer
 
 local function notify(t, m)
     pcall(function()
-        StarterGui:SetCore("SendNotification", {Title=t, Text=m, Duration=5})
+        StarterGui:SetCore("SendNotification", {Title=t, Text=m, Duration=4})
     end)
 end
 
-local issues = {}
-local warnings = {}
-local passed = {}
+-- =====================
+-- COLORS
+-- =====================
+local C = {
+    bg      = Color3.fromRGB(14, 14, 22),
+    panel   = Color3.fromRGB(20, 20, 32),
+    row     = Color3.fromRGB(26, 26, 40),
+    input   = Color3.fromRGB(18, 18, 28),
+    accent  = Color3.fromRGB(100, 220, 255),
+    red     = Color3.fromRGB(200, 45, 45),
+    orange  = Color3.fromRGB(200, 130, 30),
+    yellow  = Color3.fromRGB(200, 180, 30),
+    green   = Color3.fromRGB(40, 160, 80),
+    text    = Color3.fromRGB(220, 220, 230),
+    sub     = Color3.fromRGB(110, 110, 140),
+    blue    = Color3.fromRGB(40, 100, 200),
+}
 
-local function addIssue(severity, title, detail)
-    table.insert(issues, {severity=severity, title=title, detail=detail})
-    print("["..(severity=="HIGH" and "🔴 HIGH" or severity=="MED" and "🟡 MED" or "🟠 LOW").."] "..title)
-    print("   → "..detail)
+-- =====================
+-- SCAN DATA
+-- =====================
+local scanResults = {
+    high = {},
+    med  = {},
+    low  = {},
+    pass = {},
+    flaggedScripts = {},  -- {name, path, source, reason}
+}
+local scanDone = false
+
+-- =====================
+-- SCAN LOGIC
+-- =====================
+local DANGEROUS_REMOTE_NAMES = {
+    "give","award","add","set","admin","ban","kick",
+    "currency","coins","cash","gems","points","robux",
+    "level","xp","damage","kill","spawn","delete",
+    "remove","create","load","save","data","purchase",
+    "buy","unlock","item","weapon","tool","badge",
+    "teleport","tp","god","health","speed","fly","credits",
+}
+
+local BAD_CODE_PATTERNS = {
+    {p="OnServerEvent.*amount",    s="HIGH", desc="Trusts client-supplied amount"},
+    {p="OnServerEvent.*value",     s="HIGH", desc="Trusts client-supplied value"},
+    {p="OnServerEvent.*count",     s="HIGH", desc="Trusts client-supplied count"},
+    {p="OnServerEvent.*level",     s="HIGH", desc="Trusts client-supplied level"},
+    {p="leaderstats.*=.*args",     s="HIGH", desc="Leaderstat set from remote args"},
+    {p="leaderstats.*=.*value",    s="HIGH", desc="Leaderstat set from client value"},
+    {p="SetAsync.*OnServerEvent",  s="HIGH", desc="DataStore save triggered by client"},
+    {p="loadstring.*HttpGet",      s="HIGH", desc="Executes remote code — backdoor risk!"},
+    {p="HttpGet.*pastebin",        s="HIGH", desc="Loads from Pastebin — backdoor risk!"},
+    {p="require%(%d%d%d%d%d",      s="HIGH", desc="Requires external module by ID — backdoor risk!"},
+    {p="getfenv",                  s="HIGH", desc="getfenv usage — often used in backdoors"},
+    {p="setfenv",                  s="HIGH", desc="setfenv usage — often used in backdoors"},
+    {p="FireAllClients",           s="MED",  desc="FireAllClients — validate this is intentional"},
+    {p="Name.*==.*admin",          s="MED",  desc="Admin check by Name — use UserId instead"},
+    {p="HttpService",              s="LOW",  desc="HttpService usage — verify no data leaks"},
+    {p="InvokeServer.*currency",   s="MED",  desc="RemoteFunction invoked with currency param"},
+}
+
+local BACKDOOR_PATTERNS = {
+    "getfenv", "setfenv",
+    "HttpGet.*pastebin", "HttpGet.*raw%.github",
+    "require%(%d%d%d%d%d%d%d",
+    "loadstring.*HttpGet", "loadstring.*HttpPost",
+    "dofile", "load%(\"",
+}
+
+local function addResult(severity, title, detail, scriptObj, source)
+    local entry = {title=title, detail=detail, scriptObj=scriptObj, source=source}
+    if severity == "HIGH" then table.insert(scanResults.high, entry)
+    elseif severity == "MED" then table.insert(scanResults.med, entry)
+    else table.insert(scanResults.low, entry) end
+
+    if scriptObj and source and source ~= "" then
+        -- Check if already added
+        local already = false
+        for _, s in ipairs(scanResults.flaggedScripts) do
+            if s.path == scriptObj:GetFullName() then
+                table.insert(s.reasons, "["..severity.."] "..title)
+                already = true break
+            end
+        end
+        if not already then
+            table.insert(scanResults.flaggedScripts, {
+                name    = scriptObj.Name,
+                path    = scriptObj:GetFullName(),
+                source  = source,
+                reasons = {"["..severity.."] "..title},
+                severity = severity,
+            })
+        end
+    end
 end
 
 local function addPass(title)
-    table.insert(passed, title)
-    print("[✅ PASS] "..title)
+    table.insert(scanResults.pass, title)
 end
 
-print("=== Security Scanner ===")
-print("Scanning game for vulnerabilities...\n")
+local function runScan()
+    -- Reset
+    scanResults.high = {}
+    scanResults.med  = {}
+    scanResults.low  = {}
+    scanResults.pass = {}
+    scanResults.flaggedScripts = {}
+    scanDone = false
 
--- =====================
--- 1. SCAN ALL REMOTES
--- =====================
-print("── RemoteEvents & Functions ──")
-local remotes = {}
-for _, obj in pairs(game:GetDescendants()) do
-    if obj:IsA("RemoteEvent") or obj:IsA("RemoteFunction") then
-        table.insert(remotes, obj)
+    print("[Scanner] Starting scan...")
+
+    -- FilteringEnabled
+    if workspace.FilteringEnabled then
+        addPass("FilteringEnabled is ON")
+    else
+        addResult("HIGH","FilteringEnabled is OFF!",
+            "Clients can replicate to server. Enable in Workspace properties immediately.",nil,"")
     end
-end
 
-print("Found "..#remotes.." remotes total\n")
-
--- Check remote names for suspicious patterns
-local DANGEROUS_NAMES = {
-    "give", "award", "add", "set", "admin", "ban", "kick",
-    "currency", "coins", "cash", "gems", "robux", "points",
-    "level", "xp", "damage", "kill", "spawn", "delete",
-    "remove", "create", "load", "save", "data", "purchase",
-    "buy", "unlock", "item", "weapon", "tool", "badge",
-    "teleport", "tp", "god", "health", "speed", "fly"
-}
-
-for _, remote in ipairs(remotes) do
-    local name = remote.Name:lower()
-    for _, dangerous in ipairs(DANGEROUS_NAMES) do
-        if name:find(dangerous) then
-            addIssue("HIGH",
-                "Suspicious remote: "..remote.Name,
-                remote:GetFullName().." — name suggests it modifies game state. Verify server validates caller."
-            )
-            break
-        end
-    end
-end
-
-if #remotes == 0 then
-    addPass("No RemoteEvents found")
-end
-
--- =====================
--- 2. SCAN SCRIPTS FOR BAD PATTERNS
--- =====================
-print("\n── Script Code Analysis ──")
-
-local BAD_PATTERNS = {
-    -- Trust client for amounts
-    {pattern="OnServerEvent.*amount", desc="May trust client-supplied amount"},
-    {pattern="OnServerEvent.*value", desc="May trust client-supplied value"},
-    {pattern="OnServerEvent.*count", desc="May trust client-supplied count"},
-    -- No player validation
-    {pattern="FireAllClients", desc="FireAllClients can be abused if not validated"},
-    -- Direct value setting from remote
-    {pattern="leaderstats.*Value.*=", desc="Leaderstat value modified — verify it's server controlled"},
-    -- Dangerous admin checks
-    {pattern="UserId.*==.*admin", desc="Admin check by UserId — ensure this is server-side only"},
-    {pattern="Name.*==.*admin", desc="Admin check by Name — Names can be changed, use UserId"},
-    -- Loading strings
-    {pattern="loadstring", desc="loadstring usage — can execute arbitrary code"},
-    -- HTTP service misuse
-    {pattern="HttpService.*GetAsync.*player", desc="HTTP request with player data — potential data leak"},
-}
-
-local scriptsScanned = 0
-local scriptsWithIssues = 0
-
-for _, obj in pairs(game:GetDescendants()) do
-    if obj:IsA("Script") or obj:IsA("LocalScript") or obj:IsA("ModuleScript") then
-        local src = ""
-        local ok = pcall(function() src = obj.Source end)
-        if ok and src ~= "" then
-            scriptsScanned = scriptsScanned + 1
-            local hasIssue = false
-            for _, bp in ipairs(BAD_PATTERNS) do
-                if src:lower():find(bp.pattern:lower()) then
-                    addIssue("MED",
-                        "Potential issue in "..obj.Name,
-                        obj:GetFullName().." — "..bp.desc
-                    )
-                    hasIssue = true
-                end
-            end
-            if hasIssue then scriptsWithIssues = scriptsWithIssues + 1 end
-        end
-    end
-end
-
-print("Scanned "..scriptsScanned.." scripts, "..scriptsWithIssues.." had potential issues\n")
-
--- =====================
--- 3. CHECK FILTERINGENABLED
--- =====================
-print("── FilteringEnabled ──")
-if workspace.FilteringEnabled then
-    addPass("FilteringEnabled is ON — good!")
-else
-    addIssue("HIGH",
-        "FilteringEnabled is OFF!",
-        "This means clients can replicate changes to the server. Turn this on immediately in Workspace properties."
-    )
-end
-
--- =====================
--- 4. CHECK FOR FREE MODEL BACKDOORS
--- =====================
-print("\n── Free Model Backdoor Check ──")
-local BACKDOOR_PATTERNS = {
-    "getfenv", "setfenv", "HttpGet.*pastebin",
-    "HttpGet.*raw.github", "require.*[0-9][0-9][0-9][0-9][0-9][0-9][0-9]",
-    "loadstring.*HttpGet", "dofile", "load%(", 
-}
-
-local backdoorsFound = 0
-for _, obj in pairs(game:GetDescendants()) do
-    if obj:IsA("Script") or obj:IsA("LocalScript") or obj:IsA("ModuleScript") then
-        local src = ""
-        pcall(function() src = obj.Source end)
-        if src ~= "" then
-            for _, pattern in ipairs(BACKDOOR_PATTERNS) do
-                if src:lower():find(pattern:lower()) then
-                    addIssue("HIGH",
-                        "⚠️ Possible backdoor in "..obj.Name,
-                        obj:GetFullName().." — contains '"..pattern.."' which is commonly used in backdoors!"
-                    )
-                    backdoorsFound = backdoorsFound + 1
+    -- Scan remotes
+    local remoteCount = 0
+    for _, obj in pairs(game:GetDescendants()) do
+        if obj:IsA("RemoteEvent") or obj:IsA("RemoteFunction") then
+            remoteCount = remoteCount + 1
+            local name = obj.Name:lower()
+            for _, dn in ipairs(DANGEROUS_REMOTE_NAMES) do
+                if name:find(dn) then
+                    addResult("HIGH",
+                        "Suspicious remote: "..obj.Name,
+                        obj:GetFullName().." — name suggests it modifies game state",
+                        nil, "")
                     break
                 end
             end
         end
     end
-end
+    if remoteCount == 0 then addPass("No RemoteEvents found") end
 
-if backdoorsFound == 0 then
-    addPass("No backdoor patterns detected in scripts")
-end
+    -- Scan scripts
+    local scriptCount = 0
+    for _, obj in pairs(game:GetDescendants()) do
+        if obj:IsA("Script") or obj:IsA("LocalScript") or obj:IsA("ModuleScript") then
+            local src = ""
+            local ok = pcall(function() src = obj.Source end)
+            if ok and src ~= "" then
+                scriptCount = scriptCount + 1
 
--- =====================
--- 5. CHECK DATASTORES
--- =====================
-print("\n── DataStore Security ──")
-local dsFound = false
-for _, obj in pairs(game:GetDescendants()) do
-    if obj:IsA("Script") then
-        local src = ""
-        pcall(function() src = obj.Source end)
-        if src:find("DataStore") then
-            dsFound = true
-            -- Check if DataStore saves happen inside OnServerEvent
-            if src:find("OnServerEvent") and src:find("SetAsync") then
-                addIssue("HIGH",
-                    "DataStore save inside OnServerEvent",
-                    obj:GetFullName().." — saving data triggered by client remote is dangerous. Validate data before saving."
-                )
-            else
-                addPass("DataStore found in "..obj.Name.." — no obvious client-triggered saves")
+                -- Check backdoor patterns
+                for _, bp in ipairs(BACKDOOR_PATTERNS) do
+                    if src:lower():find(bp:lower()) then
+                        addResult("HIGH",
+                            "⚠️ Backdoor pattern in "..obj.Name,
+                            "Contains '"..bp.."' — commonly used in backdoors!",
+                            obj, src)
+                        break
+                    end
+                end
+
+                -- Check bad code patterns
+                for _, bp in ipairs(BAD_CODE_PATTERNS) do
+                    if src:lower():find(bp.p:lower()) then
+                        addResult(bp.s,
+                            bp.desc.." in "..obj.Name,
+                            obj:GetFullName().." — "..bp.desc,
+                            obj, src)
+                    end
+                end
             end
+        end
+        task.wait() -- yield so game doesn't freeze
+    end
+
+    print("[Scanner] Scanned "..scriptCount.." scripts")
+    print("[Scanner] HIGH: "..#scanResults.high.." MED: "..#scanResults.med.." PASS: "..#scanResults.pass)
+    scanDone = true
+end
+
+-- =====================
+-- GUI
+-- =====================
+local gui = Instance.new("ScreenGui")
+gui.Name = "SecurityScanner"
+gui.ResetOnSpawn = false
+gui.ZIndexBehavior = Enum.ZIndexBehavior.Global
+gui.DisplayOrder = 100
+pcall(function() gui.Parent = game:GetService("CoreGui") end)
+
+-- Main window
+local Win = Instance.new("Frame")
+Win.Size = UDim2.new(0, 580, 0, 540)
+Win.Position = UDim2.new(0.5, -290, 0.5, -270)
+Win.BackgroundColor3 = C.bg
+Win.BorderSizePixel = 0
+Win.Active = true
+Win.ZIndex = 10
+Win.Parent = gui
+Instance.new("UICorner", Win).CornerRadius = UDim.new(0, 12)
+local winS = Instance.new("UIStroke")
+winS.Color = C.accent winS.Thickness = 1.5 winS.Parent = Win
+
+-- Title bar
+local TBar = Instance.new("Frame")
+TBar.Size = UDim2.new(1,0,0,38)
+TBar.BackgroundColor3 = C.panel
+TBar.BorderSizePixel = 0
+TBar.ZIndex = 11 TBar.Parent = Win
+Instance.new("UICorner", TBar).CornerRadius = UDim.new(0,12)
+local TFix = Instance.new("Frame")
+TFix.Size=UDim2.new(1,0,0.5,0) TFix.Position=UDim2.new(0,0,0.5,0)
+TFix.BackgroundColor3=C.panel TFix.BorderSizePixel=0 TFix.ZIndex=11 TFix.Parent=TBar
+
+local TTitle = Instance.new("TextLabel")
+TTitle.Size=UDim2.new(1,-80,1,0) TTitle.Position=UDim2.new(0,12,0,0)
+TTitle.BackgroundTransparency=1 TTitle.TextColor3=C.accent
+TTitle.Font=Enum.Font.GothamBlack TTitle.TextSize=14
+TTitle.TextXAlignment=Enum.TextXAlignment.Left
+TTitle.Text="🔒 Security Scanner" TTitle.ZIndex=12 TTitle.Parent=TBar
+
+-- Close button
+local CloseBtn = Instance.new("TextButton")
+CloseBtn.Size=UDim2.new(0,26,0,26) CloseBtn.Position=UDim2.new(1,-32,0.5,-13)
+CloseBtn.BackgroundColor3=C.red CloseBtn.TextColor3=Color3.new(1,1,1)
+CloseBtn.Font=Enum.Font.GothamBlack CloseBtn.TextSize=12 CloseBtn.Text="X"
+CloseBtn.BorderSizePixel=0 CloseBtn.ZIndex=13 CloseBtn.Parent=TBar
+Instance.new("UICorner",CloseBtn).CornerRadius=UDim.new(0,6)
+CloseBtn.MouseButton1Click:Connect(function() Win.Visible=false end)
+
+-- Drag
+local drag,ds,fs=false,nil,nil
+TBar.InputBegan:Connect(function(i)
+    if i.UserInputType==Enum.UserInputType.MouseButton1 then drag=true ds=i.Position fs=Win.Position end
+end)
+TBar.InputEnded:Connect(function(i)
+    if i.UserInputType==Enum.UserInputType.MouseButton1 then drag=false end
+end)
+UserInputService.InputChanged:Connect(function(i)
+    if drag and i.UserInputType==Enum.UserInputType.MouseMovement then
+        local d=i.Position-ds
+        Win.Position=UDim2.new(fs.X.Scale,fs.X.Offset+d.X,fs.Y.Scale,fs.Y.Offset+d.Y)
+    end
+end)
+
+-- Tab bar
+local TabBar = Instance.new("Frame")
+TabBar.Size=UDim2.new(1,0,0,32)
+TabBar.Position=UDim2.new(0,0,0,38)
+TabBar.BackgroundColor3=C.panel
+TabBar.BorderSizePixel=0 TabBar.ZIndex=11 TabBar.Parent=Win
+local TBFix=Instance.new("Frame")
+TBFix.Size=UDim2.new(1,0,0.5,0) TBFix.BackgroundColor3=C.panel
+TBFix.BorderSizePixel=0 TBFix.ZIndex=11 TBFix.Parent=TabBar
+
+local tabLayout=Instance.new("UIListLayout")
+tabLayout.FillDirection=Enum.FillDirection.Horizontal
+tabLayout.Padding=UDim.new(0,4)
+tabLayout.VerticalAlignment=Enum.VerticalAlignment.Center
+tabLayout.Parent=TabBar
+Instance.new("UIPadding",TabBar).PaddingLeft=UDim.new(0,8)
+
+-- Content area
+local ContentArea = Instance.new("Frame")
+ContentArea.Size=UDim2.new(1,0,1,-70)
+ContentArea.Position=UDim2.new(0,0,0,70)
+ContentArea.BackgroundTransparency=1
+ContentArea.ZIndex=11 ContentArea.Parent=Win
+
+-- =====================
+-- TAB SYSTEM
+-- =====================
+local tabs = {}
+local panels = {}
+local activeTab = nil
+
+local function makeTab(name, icon)
+    local btn = Instance.new("TextButton")
+    btn.Size=UDim2.new(0,0,0,24)
+    btn.AutomaticSize=Enum.AutomaticSize.X
+    btn.BackgroundColor3=C.row
+    btn.TextColor3=C.sub
+    btn.Font=Enum.Font.GothamBold btn.TextSize=11
+    btn.Text=" "..icon.." "..name.." "
+    btn.BorderSizePixel=0 btn.ZIndex=12 btn.Parent=TabBar
+    Instance.new("UICorner",btn).CornerRadius=UDim.new(0,6)
+
+    local panel=Instance.new("ScrollingFrame")
+    panel.Size=UDim2.new(1,0,1,0)
+    panel.BackgroundTransparency=1
+    panel.BorderSizePixel=0
+    panel.ScrollBarThickness=4
+    panel.ScrollBarImageColor3=C.accent
+    panel.CanvasSize=UDim2.new(0,0,0,0)
+    panel.AutomaticCanvasSize=Enum.AutomaticSize.Y
+    panel.Visible=false
+    panel.ZIndex=11 panel.Parent=ContentArea
+
+    local layout=Instance.new("UIListLayout")
+    layout.Padding=UDim.new(0,4)
+    layout.Parent=panel
+    Instance.new("UIPadding",panel).PaddingTop=UDim.new(0,8)
+    Instance.new("UIPadding",panel).PaddingLeft=UDim.new(0,8)
+    Instance.new("UIPadding",panel).PaddingRight=UDim.new(0,8)
+
+    tabs[name]={btn=btn,panel=panel}
+
+    btn.MouseButton1Click:Connect(function()
+        for n,t in pairs(tabs) do
+            t.btn.BackgroundColor3=C.row t.btn.TextColor3=C.sub
+            t.panel.Visible=false
+        end
+        btn.BackgroundColor3=C.blue btn.TextColor3=Color3.new(1,1,1)
+        panel.Visible=true
+        activeTab=name
+    end)
+
+    return panel
+end
+
+local function switchTab(name)
+    for n,t in pairs(tabs) do
+        t.btn.BackgroundColor3=C.row t.btn.TextColor3=C.sub
+        t.panel.Visible=false
+    end
+    if tabs[name] then
+        tabs[name].btn.BackgroundColor3=C.blue
+        tabs[name].btn.TextColor3=Color3.new(1,1,1)
+        tabs[name].panel.Visible=true
+        activeTab=name
+    end
+end
+
+-- Create tabs
+local overviewPanel  = makeTab("Overview",  "📊")
+local issuesPanel    = makeTab("Issues",    "⚠️")
+local scriptsPanel   = makeTab("Scripts",   "📜")
+local viewerPanel    = makeTab("Viewer",    "👁")
+
+-- =====================
+-- HELPER UI BUILDERS
+-- =====================
+local function makeRow(parent, height)
+    local r=Instance.new("Frame")
+    r.Size=UDim2.new(1,0,0,height or 28)
+    r.BackgroundColor3=C.row
+    r.BorderSizePixel=0 r.ZIndex=12 r.Parent=parent
+    Instance.new("UICorner",r).CornerRadius=UDim.new(0,7)
+    return r
+end
+
+local function makeLabel(parent, text, color, size, xalign)
+    local l=Instance.new("TextLabel")
+    l.Size=UDim2.new(1,-12,1,0) l.Position=UDim2.new(0,6,0,0)
+    l.BackgroundTransparency=1 l.TextColor3=color or C.text
+    l.Font=Enum.Font.Gotham l.TextSize=size or 12
+    l.TextXAlignment=xalign or Enum.TextXAlignment.Left
+    l.TextWrapped=true l.ZIndex=13 l.Text=text l.Parent=parent
+    return l
+end
+
+local function makeSectionLbl(parent, text)
+    local l=Instance.new("TextLabel")
+    l.Size=UDim2.new(1,0,0,16)
+    l.BackgroundTransparency=1 l.TextColor3=C.sub
+    l.Font=Enum.Font.GothamBold l.TextSize=9
+    l.TextXAlignment=Enum.TextXAlignment.Left
+    l.Text="── "..text:upper().." ──"
+    l.ZIndex=12 l.Parent=parent
+    return l
+end
+
+local function makeBtn(parent, text, color, fn)
+    local b=Instance.new("TextButton")
+    b.Size=UDim2.new(1,0,0,30)
+    b.BackgroundColor3=color or C.blue
+    b.TextColor3=Color3.new(1,1,1)
+    b.Font=Enum.Font.GothamBold b.TextSize=12
+    b.Text=text b.BorderSizePixel=0 b.ZIndex=12 b.Parent=parent
+    Instance.new("UICorner",b).CornerRadius=UDim.new(0,7)
+    if fn then b.MouseButton1Click:Connect(fn) end
+    return b
+end
+
+-- =====================
+-- OVERVIEW TAB
+-- =====================
+makeSectionLbl(overviewPanel, "Controls")
+
+local scanBtn = makeBtn(overviewPanel, "▶  Run Security Scan", C.green, nil)
+
+local statusLbl = Instance.new("TextLabel")
+statusLbl.Size=UDim2.new(1,0,0,22)
+statusLbl.BackgroundTransparency=1 statusLbl.TextColor3=C.sub
+statusLbl.Font=Enum.Font.Gotham statusLbl.TextSize=11
+statusLbl.Text="Press Run to start scan"
+statusLbl.ZIndex=12 statusLbl.Parent=overviewPanel
+
+makeSectionLbl(overviewPanel, "Results")
+
+-- Score cards
+local function makeScoreCard(parent, label, color)
+    local card=Instance.new("Frame")
+    card.Size=UDim2.new(1,0,0,44)
+    card.BackgroundColor3=C.row
+    card.BorderSizePixel=0 card.ZIndex=12 card.Parent=parent
+    Instance.new("UICorner",card).CornerRadius=UDim.new(0,8)
+    local stroke=Instance.new("UIStroke")
+    stroke.Color=color stroke.Thickness=1.5 stroke.Parent=card
+
+    local numLbl=Instance.new("TextLabel")
+    numLbl.Size=UDim2.new(0,50,1,0) numLbl.Position=UDim2.new(0,10,0,0)
+    numLbl.BackgroundTransparency=1 numLbl.TextColor3=color
+    numLbl.Font=Enum.Font.GothamBlack numLbl.TextSize=22
+    numLbl.Text="--" numLbl.ZIndex=13 numLbl.Parent=card
+
+    local txtLbl=Instance.new("TextLabel")
+    txtLbl.Size=UDim2.new(1,-60,1,0) txtLbl.Position=UDim2.new(0,58,0,0)
+    txtLbl.BackgroundTransparency=1 txtLbl.TextColor3=C.text
+    txtLbl.Font=Enum.Font.GothamBold txtLbl.TextSize=12
+    txtLbl.TextXAlignment=Enum.TextXAlignment.Left
+    txtLbl.Text=label txtLbl.ZIndex=13 txtLbl.Parent=card
+
+    return numLbl
+end
+
+local highNum  = makeScoreCard(overviewPanel, "🔴 HIGH severity issues", C.red)
+local medNum   = makeScoreCard(overviewPanel, "🟡 MED severity issues",  C.yellow)
+local passNum  = makeScoreCard(overviewPanel, "✅ Checks passed",        C.green)
+local flagNum  = makeScoreCard(overviewPanel, "📜 Flagged scripts",      C.orange)
+
+makeSectionLbl(overviewPanel, "Quick Actions")
+makeBtn(overviewPanel, "View Issues →", C.orange, function() switchTab("Issues") end)
+makeBtn(overviewPanel, "View Flagged Scripts →", C.red, function() switchTab("Scripts") end)
+
+-- =====================
+-- ISSUES TAB
+-- =====================
+local function populateIssues()
+    -- Clear existing
+    for _, c in pairs(issuesPanel:GetChildren()) do
+        if c:IsA("Frame") or c:IsA("TextLabel") then c:Destroy() end
+    end
+
+    if #scanResults.high == 0 and #scanResults.med == 0 and #scanResults.low == 0 then
+        makeSectionLbl(issuesPanel, "No issues found!")
+        return
+    end
+
+    local function addIssueRow(entry, severity)
+        local col = severity=="HIGH" and C.red or severity=="MED" and C.yellow or C.orange
+        local r=makeRow(issuesPanel, 52)
+        r.BackgroundColor3=C.row
+
+        local stripe=Instance.new("Frame")
+        stripe.Size=UDim2.new(0,4,1,0) stripe.BackgroundColor3=col
+        stripe.BorderSizePixel=0 stripe.ZIndex=13 stripe.Parent=r
+        Instance.new("UICorner",stripe).CornerRadius=UDim.new(0,4)
+
+        local title=Instance.new("TextLabel")
+        title.Size=UDim2.new(1,-16,0,20) title.Position=UDim2.new(0,10,0,4)
+        title.BackgroundTransparency=1 title.TextColor3=col
+        title.Font=Enum.Font.GothamBold title.TextSize=11
+        title.TextXAlignment=Enum.TextXAlignment.Left
+        title.TextTruncate=Enum.TextTruncate.AtEnd
+        title.Text="["..severity.."] "..entry.title
+        title.ZIndex=13 title.Parent=r
+
+        local detail=Instance.new("TextLabel")
+        detail.Size=UDim2.new(1,-16,0,24) detail.Position=UDim2.new(0,10,0,24)
+        detail.BackgroundTransparency=1 detail.TextColor3=C.sub
+        detail.Font=Enum.Font.Gotham detail.TextSize=10
+        detail.TextXAlignment=Enum.TextXAlignment.Left
+        detail.TextWrapped=true
+        detail.Text=entry.detail
+        detail.ZIndex=13 detail.Parent=r
+    end
+
+    if #scanResults.high > 0 then
+        makeSectionLbl(issuesPanel, "High Severity ("..#scanResults.high..")")
+        for _, e in ipairs(scanResults.high) do addIssueRow(e,"HIGH") end
+    end
+    if #scanResults.med > 0 then
+        makeSectionLbl(issuesPanel, "Medium Severity ("..#scanResults.med..")")
+        for _, e in ipairs(scanResults.med) do addIssueRow(e,"MED") end
+    end
+    if #scanResults.low > 0 then
+        makeSectionLbl(issuesPanel, "Low Severity ("..#scanResults.low..")")
+        for _, e in ipairs(scanResults.low) do addIssueRow(e,"LOW") end
+    end
+    if #scanResults.pass > 0 then
+        makeSectionLbl(issuesPanel, "Passed Checks ("..#scanResults.pass..")")
+        for _, p in ipairs(scanResults.pass) do
+            local r=makeRow(issuesPanel,26)
+            makeLabel(r, "✅ "..p, C.green, 11)
         end
     end
 end
 
-if not dsFound then
-    print("[ℹ️ INFO] No DataStore usage found")
+-- =====================
+-- SCRIPTS TAB
+-- =====================
+local function populateScripts()
+    for _, c in pairs(scriptsPanel:GetChildren()) do
+        if c:IsA("Frame") or c:IsA("TextLabel") then c:Destroy() end
+    end
+
+    if #scanResults.flaggedScripts == 0 then
+        makeSectionLbl(scriptsPanel, "No flagged scripts found")
+        return
+    end
+
+    makeSectionLbl(scriptsPanel, "Flagged Scripts ("..#scanResults.flaggedScripts..")")
+
+    for _, s in ipairs(scanResults.flaggedScripts) do
+        local col = s.severity=="HIGH" and C.red or C.yellow
+        local r=Instance.new("Frame")
+        r.Size=UDim2.new(1,0,0,64)
+        r.BackgroundColor3=C.row
+        r.BorderSizePixel=0 r.ZIndex=12 r.Parent=scriptsPanel
+        Instance.new("UICorner",r).CornerRadius=UDim.new(0,8)
+
+        local stripe=Instance.new("Frame")
+        stripe.Size=UDim2.new(0,4,1,0)
+        stripe.BackgroundColor3=col
+        stripe.BorderSizePixel=0 stripe.ZIndex=13 stripe.Parent=r
+        Instance.new("UICorner",stripe).CornerRadius=UDim.new(0,4)
+
+        local name=Instance.new("TextLabel")
+        name.Size=UDim2.new(1,-100,0,20) name.Position=UDim2.new(0,10,0,4)
+        name.BackgroundTransparency=1 name.TextColor3=col
+        name.Font=Enum.Font.GothamBold name.TextSize=12
+        name.TextXAlignment=Enum.TextXAlignment.Left
+        name.Text=s.name name.ZIndex=13 name.Parent=r
+
+        local path=Instance.new("TextLabel")
+        path.Size=UDim2.new(1,-10,0,16) path.Position=UDim2.new(0,10,0,24)
+        path.BackgroundTransparency=1 path.TextColor3=C.sub
+        path.Font=Enum.Font.Gotham path.TextSize=9
+        path.TextXAlignment=Enum.TextXAlignment.Left
+        path.TextTruncate=Enum.TextTruncate.AtEnd
+        path.Text=s.path path.ZIndex=13 path.Parent=r
+
+        local reasons=Instance.new("TextLabel")
+        reasons.Size=UDim2.new(1,-10,0,16) reasons.Position=UDim2.new(0,10,0,42)
+        reasons.BackgroundTransparency=1 reasons.TextColor3=C.text
+        reasons.Font=Enum.Font.Gotham reasons.TextSize=9
+        reasons.TextXAlignment=Enum.TextXAlignment.Left
+        reasons.TextTruncate=Enum.TextTruncate.AtEnd
+        reasons.Text=table.concat(s.reasons, " | ") reasons.ZIndex=13 reasons.Parent=r
+
+        -- View button
+        local viewBtn=Instance.new("TextButton")
+        viewBtn.Size=UDim2.new(0,56,0,24) viewBtn.Position=UDim2.new(1,-62,0.5,-12)
+        viewBtn.BackgroundColor3=C.blue viewBtn.TextColor3=Color3.new(1,1,1)
+        viewBtn.Font=Enum.Font.GothamBold viewBtn.TextSize=10
+        viewBtn.Text="View" viewBtn.BorderSizePixel=0 viewBtn.ZIndex=13 viewBtn.Parent=r
+        Instance.new("UICorner",viewBtn).CornerRadius=UDim.new(0,6)
+
+        local scriptData = s
+        viewBtn.MouseButton1Click:Connect(function()
+            -- Populate viewer
+            for _, c in pairs(viewerPanel:GetChildren()) do
+                if c:IsA("Frame") or c:IsA("TextLabel") or c:IsA("ScrollingFrame") then
+                    c:Destroy()
+                end
+            end
+
+            makeSectionLbl(viewerPanel, scriptData.name.." — "..scriptData.path)
+
+            -- Reasons
+            for _, reason in ipairs(scriptData.reasons) do
+                local rr=makeRow(viewerPanel,24)
+                rr.BackgroundColor3=Color3.fromRGB(40,20,20)
+                makeLabel(rr, reason, C.red, 10)
+            end
+
+            makeSectionLbl(viewerPanel, "Source Code")
+
+            -- Source code box
+            local srcBox=Instance.new("ScrollingFrame")
+            srcBox.Size=UDim2.new(1,0,0,300)
+            srcBox.BackgroundColor3=C.input
+            srcBox.BorderSizePixel=0
+            srcBox.ScrollBarThickness=4
+            srcBox.ScrollBarImageColor3=C.accent
+            srcBox.CanvasSize=UDim2.new(0,0,0,0)
+            srcBox.AutomaticCanvasSize=Enum.AutomaticSize.Y
+            srcBox.ZIndex=12 srcBox.Parent=viewerPanel
+            Instance.new("UICorner",srcBox).CornerRadius=UDim.new(0,8)
+            Instance.new("UIPadding",srcBox).PaddingLeft=UDim.new(0,6)
+            Instance.new("UIPadding",srcBox).PaddingTop=UDim.new(0,6)
+
+            -- Display source with line numbers
+            local lines = srcBox.Source ~= nil and srcBox.Source or scriptData.source
+            local srcLabel=Instance.new("TextLabel")
+            srcLabel.Size=UDim2.new(1,-12,0,10)
+            srcLabel.AutomaticSize=Enum.AutomaticSize.Y
+            srcLabel.BackgroundTransparency=1 srcLabel.TextColor3=C.text
+            srcLabel.Font=Enum.Font.Code srcLabel.TextSize=11
+            srcLabel.TextXAlignment=Enum.TextXAlignment.Left
+            srcLabel.TextWrapped=true
+            srcLabel.RichText=false
+            srcLabel.Text=scriptData.source
+            srcLabel.ZIndex=13 srcLabel.Parent=srcBox
+
+            -- Copy source button
+            makeBtn(viewerPanel, "📋 Copy Source to Clipboard", C.blue, function()
+                pcall(function() setclipboard(scriptData.source) end)
+                notify("Scanner", "Source copied to clipboard!")
+            end)
+
+            switchTab("Viewer")
+        end)
+    end
 end
 
 -- =====================
--- SUMMARY
+-- SCAN BUTTON
 -- =====================
-print("\n════════════════════════════")
-print("SECURITY SCAN COMPLETE")
-print("════════════════════════════")
-print("🔴 HIGH severity issues: "..#(function()
-    local t={} for _,i in ipairs(issues) do if i.severity=="HIGH" then table.insert(t,i) end end return t
-end)())
-print("🟡 MED severity issues:  "..#(function()
-    local t={} for _,i in ipairs(issues) do if i.severity=="MED" then table.insert(t,i) end end return t
-end)())
-print("✅ Checks passed:        "..#passed)
-print("════════════════════════════")
+scanBtn.MouseButton1Click:Connect(function()
+    scanBtn.Text = "⏳ Scanning..."
+    scanBtn.BackgroundColor3 = C.orange
+    statusLbl.Text = "Scanning... please wait"
 
-if #issues == 0 then
-    print("🎉 No issues found! Your game looks secure.")
-    notify("Security Scanner", "✅ No issues found!")
-else
-    print("\n⚠️ Fix HIGH severity issues first!")
-    notify("Security Scanner", 
-        "Found "..(#issues).." issue(s)! Check console for details.")
-end
+    highNum.Text = "--"
+    medNum.Text  = "--"
+    passNum.Text = "--"
+    flagNum.Text = "--"
+
+    task.spawn(function()
+        runScan()
+
+        -- Update overview
+        highNum.Text = tostring(#scanResults.high)
+        medNum.Text  = tostring(#scanResults.med)
+        passNum.Text = tostring(#scanResults.pass)
+        flagNum.Text = tostring(#scanResults.flaggedScripts)
+
+        -- Populate other tabs
+        populateIssues()
+        populateScripts()
+
+        scanBtn.Text = "▶  Run Scan Again"
+        scanBtn.BackgroundColor3 = C.green
+        statusLbl.Text = "Scan complete! "..#scanResults.high.." HIGH, "
+            ..#scanResults.med.." MED, "..#scanResults.pass.." passed"
+
+        if #scanResults.high > 0 then
+            notify("Scanner", #scanResults.high.." HIGH severity issues found!")
+        else
+            notify("Scanner", "Scan complete! No HIGH issues found.")
+        end
+    end)
+end)
+
+-- =====================
+-- INITIAL STATE
+-- =====================
+switchTab("Overview")
+notify("Security Scanner", "Loaded! Press Run Scan to check your game.")
+print("[Security Scanner] Loaded!")
