@@ -576,9 +576,9 @@ local function populateScripts()
 
         local scriptData = s
         viewBtn.MouseButton1Click:Connect(function()
-            -- Populate viewer
+            -- Clear ALL children from viewer panel first
             for _, c in pairs(viewerPanel:GetChildren()) do
-                if c:IsA("Frame") or c:IsA("TextLabel") or c:IsA("ScrollingFrame") then
+                if not c:IsA("UIListLayout") and not c:IsA("UIPadding") then
                     c:Destroy()
                 end
             end
