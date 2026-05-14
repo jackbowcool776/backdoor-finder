@@ -1227,19 +1227,20 @@ local function startSpy()
 
     mt.__namecall = newcclosure(function(self, ...)
         local method = getnamecallmethod()
+        local args = {...}  -- capture before pcall
         if spyOn then
             if method == "FireServer" or method == "InvokeServer" then
-                local args = {...}
-                local path = "unknown"
-                pcall(function() path = self:GetFullName() end)
-                local remoteRef = self
-                -- Only log RemoteEvents and RemoteFunctions
-                if self:IsA("RemoteEvent") or self:IsA("RemoteFunction") then
-                    pcall(function() addSpyEntry(method, path, args, remoteRef) end)
-                end
+                pcall(function()
+                    local path = "unknown"
+                    pcall(function() path = self:GetFullName() end)
+                    if self:IsA("RemoteEvent") or self:IsA("RemoteFunction") then
+                        addSpyEntry(method, path, args, self)
+                        print("[Spy] Caught: "..method.." → "..path)
+                    end
+                end)
             end
         end
-        return oldNamecall(self, ...)
+        return oldNamecall(self, table.unpack(args))
     end)
 
     pcall(setreadonly, mt, true)
